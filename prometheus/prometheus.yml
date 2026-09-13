@@ -1,0 +1,18 @@
+# Scrape config for PERCH. 2s interval (CLAUDE.md §3): fast enough that a bake window holds enough
+# samples to decide on, slow enough not to distort the latency it is measuring.
+global:
+  scrape_interval: 2s
+  evaluation_interval: 2s
+
+scrape_configs:
+  - job_name: stable
+    static_configs:
+      - targets: ["stable:8000"]
+        labels:
+          service: stable
+
+  - job_name: canary
+    static_configs:
+      - targets: ["canary:8000"]
+        labels:
+          service: canary

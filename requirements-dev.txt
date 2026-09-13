@@ -1,0 +1,7 @@
+# Host-side tooling: tests, formatting, analysis, load generation.
+# Service/controller runtime deps live in their own requirements.txt next to each Dockerfile.
+pytest>=8.0
+httpx>=0.27
+black>=24.0
+ruff>=0.5
+matplotlib>=3.8

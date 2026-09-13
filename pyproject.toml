@@ -1,0 +1,22 @@
+[project]
+name = "perch"
+version = "0.1.0"
+description = "Canary rollback controller — progressive delivery with a statistically justified rollback decision"
+requires-python = ">=3.11"
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# decision.py/ramp.py import their siblings by bare name (they do the same inside the container),
+# so the controller package dir has to be importable from the host test run too.
+pythonpath = ["controller"]

@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Run artifacts — keep the directories, not their contents
+results/*
+!results/.gitkeep
+
+# Rendered proxy config (generated at runtime from nginx.conf.j2)
+proxy/nginx.conf
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+implementation-plans/
+
+CLAUDE.md

@@ -1,0 +1,61 @@
+# PERCH stack. Scaffolding — service definitions are shaped per CLAUDE.md §3/§4 but the images
+# they build are still stubs until Phase 1 (CLAUDE.md §7) is implemented.
+
+services:
+  stable:
+    build: ./services/stable
+    environment:
+      SERVICE_NAME: stable
+      ERROR_RATE: ${STABLE_ERROR_RATE:-0.0}
+      LATENCY_MS_MEAN: ${STABLE_LATENCY_MS_MEAN:-40}
+      LATENCY_MS_JITTER: ${STABLE_LATENCY_MS_JITTER:-10}
+    ports:
+      - "${STABLE_PORT:-8091}:8000"
+
+  canary:
+    build: ./services/canary
+    environment:
+      SERVICE_NAME: canary
+      # Scenario scripts (scenarios/*.sh) overwrite these and restart this container —
+      # "shipping a broken canary" is an env-var change, never a code fork (CLAUDE.md §5.1).
+      ERROR_RATE: ${CANARY_ERROR_RATE:-0.0}
+      LATENCY_MS_MEAN: ${CANARY_LATENCY_MS_MEAN:-40}
+      LATENCY_MS_JITTER: ${CANARY_LATENCY_MS_JITTER:-10}
+      DEGRADE_ENDPOINT: ${CANARY_DEGRADE_ENDPOINT:-}
+      DEGRADE_RAMP_SECONDS: ${CANARY_DEGRADE_RAMP_SECONDS:-}
+    ports:
+      - "${CANARY_PORT:-8092}:8000"
+
+  proxy:
+    build: ./proxy
+    depends_on: [stable, canary]
+    ports:
+      - "${PROXY_PORT:-8080}:80"
+    volumes:
+      # Shared with the controller: it renders nginx.conf.j2 here, then triggers a reload.
+      - proxy-conf:/etc/nginx/conf.d
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    depends_on: [stable, canary]
+    ports:
+      - "${PROMETHEUS_PORT:-9095}:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  controller:
+    build: ./controller
+    depends_on: [prometheus, proxy]
+    environment:
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://prometheus:9090}
+      DECISION_MODE: ${DECISION_MODE:-tier1}
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-5}
+      PROXY_CONTAINER: perch-proxy-1
+    volumes:
+      - proxy-conf:/etc/nginx/conf.d
+      - ./results:/results
+      # Lets the controller run `nginx -s reload` in the proxy container after rendering.
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  proxy-conf:
