@@ -63,7 +63,9 @@ def evaluate_tier1(canary: MetricSample, stable: MetricSample, cfg: DecisionConf
     raise NotImplementedError("Phase 4: Wilson-interval two-proportion test + latency ratio")
 
 
-def evaluate_tier2_sprt(canary: MetricSample, stable: MetricSample, cfg: DecisionConfig) -> Decision:
+def evaluate_tier2_sprt(
+    canary: MetricSample, stable: MetricSample, cfg: DecisionConfig
+) -> Decision:
     """Stretch (Phase 6): maintain a running log-likelihood ratio over each new success/failure
     observation in the bake window and compare it against boundaries derived from cfg.alpha and
     cfg.beta. Implement only once Tier 1 is fully working and tested."""

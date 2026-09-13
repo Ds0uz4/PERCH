@@ -5,9 +5,6 @@ HTTP service sit behind a weighted nginx proxy; a controller continuously compar
 error rate and latency against stable's and moves the traffic weight on its own — promoting a good
 release to 100% and rolling a bad one back to 0% with no human touching a dashboard.
 
-**Status: scaffolding only.** The repository layout exists; the phases in `CLAUDE.md` §7 are not
-implemented yet. Every stub file names the section of `CLAUDE.md` that specifies it.
-
 ## Architecture
 
 ```
@@ -17,6 +14,19 @@ loadgen ──> nginx (weighted split) ──> stable  ──/metrics──┐
                     └────── rewrite weights + reload ── controller ─┘
                                                             │
                                                             └──> results/decision_log.jsonl
+```
+
+## Local setup
+
+The services, proxy, and controller install their own dependencies inside their Docker images.
+The virtualenv is only for what runs on the host: tests, formatters, the load generator, and the
+analysis scripts.
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+cp .env.example .env        # .env is gitignored; edit it for local overrides
 ```
 
 ## Quick start (once implemented)

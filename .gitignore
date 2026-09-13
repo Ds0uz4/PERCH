@@ -22,3 +22,5 @@ proxy/nginx.conf
 implementation-plans/
 
 CLAUDE.md
+
+.env
