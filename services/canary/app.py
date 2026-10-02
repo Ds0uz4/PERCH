@@ -79,7 +79,14 @@ app = FastAPI(title=f"perch-{SERVICE_NAME}")
 
 
 def fault_scale() -> float:
-    """How fully 'on' the configured fault is, in [0, 1]."""
+    """Calculate how fully 'on' the configured fault is, in [0, 1].
+
+    When DEGRADE_RAMP_SECONDS is set, the fault ramps up gradually from 0 to 1
+    over that time period. This simulates slow-onset faults.
+
+    Returns:
+        Float between 0.0 (fault not active) and 1.0 (fault fully active)
+    """
     if not DEGRADE_RAMP_SECONDS or DEGRADE_RAMP_SECONDS <= 0:
         return 1.0
     elapsed = time.monotonic() - STARTED_AT
@@ -87,6 +94,17 @@ def fault_scale() -> float:
 
 
 def path_is_faulted(path: str) -> bool:
+    """Check if a specific path should have the fault applied.
+
+    When DEGRADE_ENDPOINT is set, only that specific path experiences the fault.
+    This enables partial failure scenarios where only some endpoints are broken.
+
+    Args:
+        path: The request path to check
+
+    Returns:
+        True if the path should have the fault applied, False otherwise
+    """
     if not DEGRADE_ENDPOINT:
         return True
     want = DEGRADE_ENDPOINT.rstrip("/") or "/"

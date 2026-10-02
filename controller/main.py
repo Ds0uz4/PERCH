@@ -33,6 +33,24 @@ def _log_line(
     taken,
     now: float,
 ) -> dict:
+    """Build a complete decision log entry for observability.
+
+    This function creates a comprehensive record of each controller decision,
+    including the state before/after, metrics from both services, and the
+    reasoning behind the action taken. This enables post-mortem analysis
+    and debugging of rollout behavior.
+
+    Args:
+        state: Current ramp state (weights, stage, terminal flags)
+        canary: MetricSample from canary service
+        stable: MetricSample from stable service
+        evaluated: Decision object from the evaluation logic
+        taken: Action actually taken (may differ from evaluated due to bake time)
+        now: Current timestamp
+
+    Returns:
+        Dictionary containing all decision context for logging
+    """
     return {
         "ts": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
         "unix": now,
@@ -60,6 +78,17 @@ def _log_line(
 
 
 def _write_status(path: Path, state: RampState, taken: str, reason: str) -> None:
+    """Write the current controller state to a JSON file for monitoring.
+
+    This creates a lightweight status file that external tools can poll to
+    check the current state of the rollout without parsing the full decision log.
+
+    Args:
+        path: File path to write status.json
+        state: Current ramp state
+        taken: Action taken in this iteration
+        reason: Reason for the action
+    """
     path.write_text(
         json.dumps(
             {
@@ -77,6 +106,27 @@ def _write_status(path: Path, state: RampState, taken: str, reason: str) -> None
 
 
 def run(cfg: ControllerConfig) -> None:
+    """Main controller loop: observe metrics, decide on actions, update proxy.
+
+    This is the heart of the PERCH system. It runs in an infinite loop,
+    periodically polling Prometheus for metrics, evaluating whether to
+    advance or rollback the canary, and updating nginx configuration when
+    traffic weights need to change.
+
+    The loop:
+    1. Pulls metrics from Prometheus for both services
+    2. Evaluates the decision logic (pure function)
+    3. Applies the decision to the ramp state machine
+    4. Updates nginx config if weights changed
+    5. Logs the decision with full evidence
+    6. Sleeps until the next poll interval
+
+    Errors in a single tick are caught and logged but don't terminate the loop,
+    ensuring the controller remains resilient to transient failures.
+
+    Args:
+        cfg: Controller configuration (poll interval, decision params, etc.)
+    """
     mode: DecisionMode = os.environ.get("DECISION_MODE", "tier1")  # type: ignore[assignment]
     if mode not in ("naive_threshold", "tier1", "tier2_sprt"):
         raise SystemExit(f"invalid DECISION_MODE={mode!r}")
