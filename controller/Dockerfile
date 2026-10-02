@@ -3,11 +3,6 @@
 
 FROM python:3.11-slim
 
-# Install docker CLI: the controller needs to reload nginx in the proxy container
-# by running `docker exec perch-proxy nginx -s reload` over the mounted socket
-RUN apt-get update && apt-get install -y --no-install-recommends docker.io \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
 # Install Python dependencies

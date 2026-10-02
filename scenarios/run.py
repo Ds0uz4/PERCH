@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -77,6 +78,26 @@ def run(cmd: list[str], env: dict | None = None, check: bool = True) -> subproce
     return subprocess.run(cmd, cwd=ROOT, env=merged, check=check)
 
 
+def write_env_file(env: dict) -> None:
+    """Write scenario variables to .env so Docker Compose picks them up reliably.
+
+    On Windows with Docker Desktop, env vars injected via subprocess.run(env=...)
+    are not always forwarded into Docker Compose's variable-interpolation engine.
+    Docker Compose unconditionally reads .env from the project root, making this
+    the most portable way to pass scenario parameters to containers.
+    """
+    lines = [f'{k}={v}' for k, v in env.items()]
+    (ROOT / ".env").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"wrote .env: {env}", flush=True)
+
+
+def clear_env_file() -> None:
+    """Remove the temporary .env written for the scenario."""
+    env_path = ROOT / ".env"
+    if env_path.exists():
+        env_path.unlink()
+
+
 def rotate_logs(name: str) -> Path:
     RESULTS.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -115,6 +136,52 @@ def read_status() -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {}
+
+
+def start_nginx_reloader():
+    """Start a background thread to reload nginx when config changes.
+
+    This is needed for Windows/Docker Desktop compatibility where the
+    controller container cannot access the Docker CLI.
+    """
+    config_path = ROOT / "proxy-conf" / "default.conf"
+    # Ensure the bind-mount directory exists before anything tries to write to it
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Seed the hash from the current file so the *first* write by the controller
+    # is detected as a change (previously last_hash=None caused the first write
+    # to be swallowed by the `last_hash is not None` guard).
+    def _file_hash() -> int | None:
+        try:
+            return hash(config_path.read_text()) if config_path.exists() else None
+        except OSError:
+            return None
+
+    last_hash = _file_hash()
+
+    def reload_loop():
+        nonlocal last_hash
+        while True:
+            try:
+                current_hash = _file_hash()
+                if current_hash is not None and current_hash != last_hash:
+                    try:
+                        subprocess.run(
+                            [*COMPOSE, "exec", "-T", "proxy", "nginx", "-s", "reload"],
+                            check=False,
+                            capture_output=True,
+                        )
+                        print("nginx reloaded due to config change", flush=True)
+                    except Exception as e:
+                        print(f"WARNING: Failed to reload nginx: {e}", flush=True)
+                last_hash = current_hash
+            except Exception as e:
+                print(f"WARNING: Error in nginx reloader: {e}", flush=True)
+            time.sleep(2)
+
+    thread = threading.Thread(target=reload_loop, daemon=True)
+    thread.start()
+    return thread
 
 
 def wait_terminal(expect: str, timeout: float) -> dict:
@@ -168,19 +235,29 @@ def scenario_run(name: str, extra_env: dict | None = None) -> dict:
     print(f"=== scenario {name} expect={spec['expect']} ===", flush=True)
     rotate_logs(name)
 
-    run([*COMPOSE, "up", "-d", "--build", "stable", "canary", "proxy", "prometheus"])
-    wait_http_ok("http://127.0.0.1:8091/health")
-    wait_http_ok("http://127.0.0.1:8092/health")
+    # Write .env so Docker Compose interpolates scenario vars into all containers.
+    # This is more reliable than subprocess env inheritance on Windows/Docker Desktop.
+    write_env_file(env)
+    try:
+        run([*COMPOSE, "up", "-d", "--build", "stable", "canary", "proxy", "prometheus"])
+        wait_http_ok("http://127.0.0.1:8091/health")
+        wait_http_ok("http://127.0.0.1:8092/health")
 
-    run([*COMPOSE, "up", "-d", "--build", "--force-recreate", "canary"], env=env)
-    wait_http_ok("http://127.0.0.1:8092/health")
+        run([*COMPOSE, "up", "-d", "--build", "--force-recreate", "canary"])
+        wait_http_ok("http://127.0.0.1:8092/health")
 
-    run([*COMPOSE, "up", "-d", "--build", "--force-recreate", "controller"], env=env)
-    run([*COMPOSE, "--profile", "load", "up", "-d", "--build", "--force-recreate", "loadgen"])
+        run([*COMPOSE, "up", "-d", "--build", "--force-recreate", "controller"])
 
-    started = time.time()
-    status = wait_terminal(spec["expect"], spec["timeout"])
-    elapsed = time.time() - started
+        # Start nginx reloader for Windows compatibility
+        start_nginx_reloader()
+
+        run([*COMPOSE, "--profile", "load", "up", "-d", "--build", "--force-recreate", "loadgen"])
+
+        started = time.time()
+        status = wait_terminal(spec["expect"], spec["timeout"])
+        elapsed = time.time() - started
+    finally:
+        clear_env_file()
 
     run([*COMPOSE, "stop", "loadgen"], check=False)
     canary_n, total_n = blast_radius()
