@@ -1,5 +1,6 @@
 FROM nginx:1.27-alpine
 
-# The live config is mounted from the shared `proxy-conf` volume that the controller writes into.
-# This baked copy is only the pre-rollout default (100% stable) used before the first render.
+COPY bootstrap.conf /etc/nginx/bootstrap.conf
 COPY nginx.conf.j2 /etc/nginx/nginx.conf.j2
+COPY 99-bootstrap.sh /docker-entrypoint.d/99-bootstrap.sh
+RUN chmod +x /docker-entrypoint.d/99-bootstrap.sh
