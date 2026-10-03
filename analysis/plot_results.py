@@ -10,6 +10,14 @@ import matplotlib.pyplot as plt
 
 
 def load_log(path: Path) -> list[dict]:
+    """Load the decision log from a JSONL file.
+
+    Args:
+        path: Path to the decision log file.
+
+    Returns:
+        A list of dictionaries, where each dictionary represents one log entry.
+    """
     rows = []
     if not path.exists():
         return rows
@@ -20,6 +28,21 @@ def load_log(path: Path) -> list[dict]:
 
 
 def plot_run(rows: list[dict], out_dir: Path, title: str) -> Path:
+    """Generate a multi-panel matplotlib plot of the rollout process.
+
+    Creates a 3-panel plot showing:
+    1. Canary weight over time (with rollback/promote/advance events)
+    2. Error rate for both stable and canary over time
+    3. p95 latency for both stable and canary over time
+
+    Args:
+        rows: List of decision log entries.
+        out_dir: Directory to save the output plot (rollout.png).
+        title: Title of the plot.
+
+    Returns:
+        The path to the generated plot image.
+    """
     if not rows:
         raise SystemExit("decision log is empty")
     t0 = rows[0]["unix"]
@@ -69,6 +92,10 @@ def plot_run(rows: list[dict], out_dir: Path, title: str) -> Path:
 
 
 def main() -> None:
+    """Main entrypoint for the plotting script.
+
+    Parses command-line arguments and triggers the plotting logic.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--log", default="results/decision_log.jsonl")
     parser.add_argument("--out-dir", default="results")

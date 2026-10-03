@@ -30,9 +30,11 @@ python scenarios/run.py bad-error
 # View the rollout visualization
 open results/rollout.png
 ```
+
+**Note**: The nginx proxy automatically reloads its configuration when the controller adjusts traffic weights. This happens inside the proxy container, so no manual reload step is required.
 **Components:**
 - **Stable/Canary Services**: FastAPI apps with configurable faults
-- **nginx**: Weighted routing between services
+- **nginx**: Weighted routing between services (auto-reloads on config changes)
 - **Prometheus**: Scrapes metrics every 2s
 - **Controller**: Polls every 5s, decides hold/advance/rollback
 - **Load Generator**: Optional traffic generator for demos
@@ -93,8 +95,9 @@ Key settings (via environment variables or `.env`):
 
 **Controller not making decisions?**
 - Check: `docker compose logs controller`
-- Ensure services are healthy: `curl http://localhost:8091/health`
+- Ensure services are healthy: `curl http://localhost:8091/health` (or your configured STABLE_PORT)
 - Verify Prometheus is scraping: `curl http://localhost:9095/api/v1/targets`
+- Check nginx is reloading: `docker compose logs proxy` should show reload events when config changes
 
 **Rollback happens too quickly?**
 - Increase `MIN_SAMPLES_PER_WINDOW` (default: 40)
@@ -109,6 +112,7 @@ Key settings (via environment variables or `.env`):
   CANARY_PORT=8094
   PROMETHEUS_PORT=9096
   ```
+- Scenario runners will respect these port settings
 
 ## Development
 

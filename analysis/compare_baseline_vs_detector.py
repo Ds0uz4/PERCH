@@ -17,6 +17,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def run_once(mode: str) -> dict:
+    """Run the bad-error scenario once for a given decision mode.
+
+    Sets the DECISION_MODE environment variable and invokes the scenario runner.
+    Parses the SUMMARY line from the runner's output.
+
+    Args:
+        mode: The decision mode to use (e.g., "naive_threshold", "tier1").
+
+    Returns:
+        A dictionary containing the parsed summary metrics from the run.
+    """
     env = os.environ.copy()
     env["DECISION_MODE"] = mode
     proc = subprocess.run(
@@ -38,6 +49,12 @@ def run_once(mode: str) -> dict:
 
 
 def main() -> None:
+    """Main entrypoint for the comparison script.
+
+    Parses command-line arguments to determine the number of repeats,
+    runs the bad-error scenario in both 'naive_threshold' and 'tier1' modes,
+    and prints a formatted table comparing the blast radius (canary requests).
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--repeats", type=int, default=1)
     args = parser.parse_args()

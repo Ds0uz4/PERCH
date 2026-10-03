@@ -2,6 +2,10 @@
 
 Works on Windows (PowerShell) and Unix. Requires Docker. Plots require
 matplotlib (see requirements-dev.txt).
+
+Scenario variables are passed via subprocess environment variables to Docker
+Compose. The nginx proxy automatically reloads when the controller adjusts
+traffic weights.
 """
 
 from __future__ import annotations
@@ -12,7 +16,6 @@ import os
 import shutil
 import subprocess
 import sys
-import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -71,31 +74,21 @@ SCENARIOS = {
 
 
 def run(cmd: list[str], env: dict | None = None, check: bool = True) -> subprocess.CompletedProcess:
+    """Run a subprocess command in the project root directory.
+
+    Args:
+        cmd: The command and its arguments as a list of strings.
+        env: Optional environment variables to merge with the current process environment.
+        check: If True, raises a subprocess.CalledProcessError if the command fails.
+
+    Returns:
+        The result of the subprocess run.
+    """
     merged = os.environ.copy()
     if env:
         merged.update(env)
     print("+", " ".join(cmd), flush=True)
     return subprocess.run(cmd, cwd=ROOT, env=merged, check=check)
-
-
-def write_env_file(env: dict) -> None:
-    """Write scenario variables to .env so Docker Compose picks them up reliably.
-
-    On Windows with Docker Desktop, env vars injected via subprocess.run(env=...)
-    are not always forwarded into Docker Compose's variable-interpolation engine.
-    Docker Compose unconditionally reads .env from the project root, making this
-    the most portable way to pass scenario parameters to containers.
-    """
-    lines = [f'{k}={v}' for k, v in env.items()]
-    (ROOT / ".env").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"wrote .env: {env}", flush=True)
-
-
-def clear_env_file() -> None:
-    """Remove the temporary .env written for the scenario."""
-    env_path = ROOT / ".env"
-    if env_path.exists():
-        env_path.unlink()
 
 
 def rotate_logs(name: str) -> Path:
@@ -112,6 +105,18 @@ def rotate_logs(name: str) -> Path:
 
 
 def wait_http_ok(url: str, timeout: float = 60.0) -> None:
+    """Wait for an HTTP endpoint to return a 2xx success code.
+
+    Polls the endpoint once per second until it returns a successful response
+    or the timeout is reached.
+
+    Args:
+        url: The HTTP URL to poll.
+        timeout: Maximum time to wait in seconds.
+
+    Raises:
+        SystemExit: If the endpoint doesn't respond successfully within the timeout.
+    """
     import urllib.error
     import urllib.request
 
@@ -129,6 +134,12 @@ def wait_http_ok(url: str, timeout: float = 60.0) -> None:
 
 
 def read_status() -> dict:
+    """Read the current status from results/status.json.
+
+    Returns:
+        A dictionary containing the parsed JSON status, or an empty dictionary
+        if the file doesn't exist or is invalid JSON.
+    """
     path = RESULTS / "status.json"
     if not path.exists():
         return {}
@@ -138,53 +149,21 @@ def read_status() -> dict:
         return {}
 
 
-def start_nginx_reloader():
-    """Start a background thread to reload nginx when config changes.
-
-    This is needed for Windows/Docker Desktop compatibility where the
-    controller container cannot access the Docker CLI.
-    """
-    config_path = ROOT / "proxy-conf" / "default.conf"
-    # Ensure the bind-mount directory exists before anything tries to write to it
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Seed the hash from the current file so the *first* write by the controller
-    # is detected as a change (previously last_hash=None caused the first write
-    # to be swallowed by the `last_hash is not None` guard).
-    def _file_hash() -> int | None:
-        try:
-            return hash(config_path.read_text()) if config_path.exists() else None
-        except OSError:
-            return None
-
-    last_hash = _file_hash()
-
-    def reload_loop():
-        nonlocal last_hash
-        while True:
-            try:
-                current_hash = _file_hash()
-                if current_hash is not None and current_hash != last_hash:
-                    try:
-                        subprocess.run(
-                            [*COMPOSE, "exec", "-T", "proxy", "nginx", "-s", "reload"],
-                            check=False,
-                            capture_output=True,
-                        )
-                        print("nginx reloaded due to config change", flush=True)
-                    except Exception as e:
-                        print(f"WARNING: Failed to reload nginx: {e}", flush=True)
-                last_hash = current_hash
-            except Exception as e:
-                print(f"WARNING: Error in nginx reloader: {e}", flush=True)
-            time.sleep(2)
-
-    thread = threading.Thread(target=reload_loop, daemon=True)
-    thread.start()
-    return thread
-
-
 def wait_terminal(expect: str, timeout: float) -> dict:
+    """Wait for the rollout to reach a terminal state (promoted or rolled_back).
+
+    Polls the status.json file every 2 seconds until the expected state is reached.
+
+    Args:
+        expect: The expected terminal state ("promote" or "rollback").
+        timeout: Maximum time to wait in seconds.
+
+    Returns:
+        The final status dictionary.
+
+    Raises:
+        SystemExit: If the terminal state is not reached within the timeout.
+    """
     deadline = time.time() + timeout
     last = {}
     while time.time() < deadline:
@@ -200,6 +179,14 @@ def wait_terminal(expect: str, timeout: float) -> dict:
 
 
 def blast_radius() -> tuple[int, int]:
+    """Calculate the blast radius of the canary deployment.
+
+    Reads the load generator logs to count how many total requests were made
+    and how many hit the canary service.
+
+    Returns:
+        A tuple of (canary_requests, total_requests).
+    """
     path = RESULTS / "loadgen.jsonl"
     canary = total = 0
     if not path.exists():
@@ -218,6 +205,13 @@ def blast_radius() -> tuple[int, int]:
 
 
 def plot(name: str) -> None:
+    """Generate a rollout plot for the scenario.
+
+    Invokes the plot_results.py analysis script to create results/rollout.png.
+
+    Args:
+        name: Name of the scenario (used as the plot title).
+    """
     script = ROOT / "analysis" / "plot_results.py"
     cmd = [sys.executable, str(script), "--log", str(RESULTS / "decision_log.jsonl"), "--out-dir", str(RESULTS), "--title", name]
     try:
@@ -227,6 +221,19 @@ def plot(name: str) -> None:
 
 
 def scenario_run(name: str, extra_env: dict | None = None) -> dict:
+    """Run a full end-to-end scenario test.
+
+    Sets up the environment, brings up the Docker Compose stack, waits for
+    the controller to reach a terminal decision, tears down the load generator,
+    calculates metrics, generates a plot, and outputs a summary.
+
+    Args:
+        name: The name of the scenario to run.
+        extra_env: Additional environment variables to apply.
+
+    Returns:
+        A dictionary summarizing the scenario results.
+    """
     spec = SCENARIOS[name]
     env = {k: v for k, v in spec.items() if k not in ("expect", "timeout")}
     if extra_env:
@@ -235,29 +242,26 @@ def scenario_run(name: str, extra_env: dict | None = None) -> dict:
     print(f"=== scenario {name} expect={spec['expect']} ===", flush=True)
     rotate_logs(name)
 
-    # Write .env so Docker Compose interpolates scenario vars into all containers.
-    # This is more reliable than subprocess env inheritance on Windows/Docker Desktop.
-    write_env_file(env)
+    # Pass scenario vars via subprocess env to Docker Compose
+    started = time.time()
     try:
-        run([*COMPOSE, "up", "-d", "--build", "stable", "canary", "proxy", "prometheus"])
-        wait_http_ok("http://127.0.0.1:8091/health")
-        wait_http_ok("http://127.0.0.1:8092/health")
+        run([*COMPOSE, "up", "-d", "--build", "stable", "canary", "proxy", "prometheus"], env=env)
+        stable_port = int(env.get("STABLE_PORT", os.environ.get("STABLE_PORT", "8091")))
+        canary_port = int(env.get("CANARY_PORT", os.environ.get("CANARY_PORT", "8092")))
+        wait_http_ok(f"http://127.0.0.1:{stable_port}/health")
+        wait_http_ok(f"http://127.0.0.1:{canary_port}/health")
 
-        run([*COMPOSE, "up", "-d", "--build", "--force-recreate", "canary"])
-        wait_http_ok("http://127.0.0.1:8092/health")
+        run([*COMPOSE, "up", "-d", "--build", "--force-recreate", "canary"], env=env)
+        wait_http_ok(f"http://127.0.0.1:{canary_port}/health")
 
-        run([*COMPOSE, "up", "-d", "--build", "--force-recreate", "controller"])
+        run([*COMPOSE, "up", "-d", "--build", "--force-recreate", "controller"], env=env)
 
-        # Start nginx reloader for Windows compatibility
-        start_nginx_reloader()
+        run([*COMPOSE, "--profile", "load", "up", "-d", "--build", "--force-recreate", "loadgen"], env=env)
 
-        run([*COMPOSE, "--profile", "load", "up", "-d", "--build", "--force-recreate", "loadgen"])
-
-        started = time.time()
         status = wait_terminal(spec["expect"], spec["timeout"])
         elapsed = time.time() - started
     finally:
-        clear_env_file()
+        pass
 
     run([*COMPOSE, "stop", "loadgen"], check=False)
     canary_n, total_n = blast_radius()
@@ -285,6 +289,11 @@ def scenario_run(name: str, extra_env: dict | None = None) -> dict:
 
 
 def main() -> None:
+    """Main entrypoint for the scenario runner.
+
+    Parses command-line arguments to execute either a specific scenario
+    or all scenarios sequentially.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("scenario", choices=[*SCENARIOS, "all"])
     args = parser.parse_args()

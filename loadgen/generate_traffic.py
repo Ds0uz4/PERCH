@@ -20,7 +20,16 @@ import httpx
 
 
 def parse_mix(raw: str) -> list[tuple[str, float]]:
-    """'work:2,work/checkout:1' → weighted path list."""
+    """Parse a comma-separated path:weight string into a weighted path list.
+
+    Example: 'work:2,work/checkout:1' -> [('work', 2.0), ('work/checkout', 1.0)]
+
+    Args:
+        raw: The raw weight mix string.
+
+    Returns:
+        A list of (path, weight) tuples.
+    """
     parts = []
     for item in raw.split(","):
         item = item.strip()
@@ -37,6 +46,14 @@ def parse_mix(raw: str) -> list[tuple[str, float]]:
 
 
 def pick_path(mix: list[tuple[str, float]]) -> str:
+    """Randomly pick a path based on its configured weight.
+
+    Args:
+        mix: A list of (path, weight) tuples.
+
+    Returns:
+        A randomly chosen path string (prefixed with '/').
+    """
     paths, weights = zip(*mix)
     chosen = random.choices(list(paths), weights=list(weights), k=1)[0]
     return "/" + chosen.lstrip("/")
@@ -48,6 +65,17 @@ async def one_request(
     mix: list[tuple[str, float]],
     sink: asyncio.Queue,
 ) -> None:
+    """Execute a single HTTP GET request against the target service.
+
+    Picks a random path, makes the request, records the latency and status code,
+    and places the result object into the sink queue for logging.
+
+    Args:
+        client: The httpx AsyncClient.
+        target: The base URL of the target service.
+        mix: Path weight distribution.
+        sink: Async queue where request metrics will be deposited.
+    """
     path = pick_path(mix)
     url = target.rstrip("/") + path
     t0 = time.perf_counter()
@@ -74,6 +102,16 @@ async def one_request(
 
 
 async def writer(sink: asyncio.Queue, path: Path, stop: asyncio.Event) -> None:
+    """Background task to write generated request metrics to a JSONL log file.
+
+    Continuously drains the sink queue and appends JSON lines to the output path
+    until the stop event is set and the queue is completely empty.
+
+    Args:
+        sink: Async queue supplying request metrics.
+        path: File path to append JSON logs to.
+        stop: Event signaling the load generator is shutting down.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         while True:
@@ -88,6 +126,14 @@ async def writer(sink: asyncio.Queue, path: Path, stop: asyncio.Event) -> None:
 
 
 async def run(args: argparse.Namespace) -> None:
+    """Core load generator loop.
+
+    Spawns concurrent requests at the specified rate (RPS) in an open-loop
+    fashion. Ensures we don't back off even if the service is slow or failing.
+
+    Args:
+        args: Parsed command-line arguments.
+    """
     mix = parse_mix(args.mix)
     stop = asyncio.Event()
 
@@ -132,6 +178,10 @@ async def run(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    """Main entrypoint for the load generator script.
+
+    Parses command-line arguments and kicks off the asyncio event loop.
+    """
     parser = argparse.ArgumentParser(description="Open-loop canary load generator")
     parser.add_argument(
         "--target",

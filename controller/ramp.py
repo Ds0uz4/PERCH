@@ -8,11 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# pyrefly: ignore [missing-import]
 from config import RampConfig
-# pyrefly: ignore [missing-import]
-from decision import Action, Decision 
-
+from decision import Action, Decision
 
 
 @dataclass

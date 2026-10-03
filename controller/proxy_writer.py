@@ -1,15 +1,16 @@
-"""Render nginx.conf.j2 into the shared volume and reload the proxy.
+"""Render nginx.conf.j2 into the shared volume for the proxy.
 
 This module handles the dynamic nginx configuration used for weighted traffic
 splitting between stable and canary services. Key features:
 
 - Zero-weight handling: nginx rejects weight=0, so we emit `down` instead
-- Simple file-based reload: writes config and sends SIGHUP to nginx
-- Configuration validation: tests nginx config before reloading
+- Simple file-based config: writes config to shared volume
+- Configuration validation: tests nginx config before applying
 
 A zero canary weight becomes `down`, not `weight=0` (nginx treats 0 as invalid).
-Reloads are debounced so a busy control loop cannot drop connections and
-contaminate the latency it is measuring.
+The proxy container watches the config file and automatically reloads nginx
+when it changes (see proxy/99-bootstrap.sh). Reloads are debounced so a busy
+control loop cannot drop connections and contaminate the latency it is measuring.
 """
 
 from __future__ import annotations
@@ -26,16 +27,15 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 class ProxyWriter:
     """Manages nginx configuration for weighted traffic splitting.
 
-    This class renders the Jinja2 template with current traffic weights,
-    writes it to the shared volume, and reloads nginx when weights change.
-    Reloads are debounced to prevent connection drops.
-
-    Uses a helper script approach for cross-platform compatibility.
+    This class renders the Jinja2 template with current traffic weights and
+    writes it to the shared volume. The proxy container watches this file and
+    automatically reloads nginx when it changes. Reloads are debounced to prevent
+    connection drops.
 
     Attributes:
         template_path: Path to the Jinja2 template file
         output_path: Path where rendered config should be written
-        proxy_container: Name of the nginx container
+        proxy_container: Name of the nginx container (for compatibility)
         debounce_seconds: Minimum time between reloads
         _last_reload: Timestamp of the last reload
         _applied: Last-applied weights (to detect changes)
@@ -86,21 +86,23 @@ class ProxyWriter:
         )
 
     def apply(self, stable_weight: int, canary_weight: int, force: bool = False) -> bool:
-        """Write config and reload nginx if weights changed.
+        """Write config if weights changed.
 
         This method:
         1. Renders the config with new weights
         2. Writes it to the output path if changed
         3. Waits for debounce period if needed
-        4. Reloads nginx using the helper script
+
+        The proxy container watches the config file and automatically reloads
+        nginx when it changes.
 
         Args:
             stable_weight: Traffic weight for stable service (0-100)
             canary_weight: Traffic weight for canary service (0-100)
-            force: If True, reload even if weights haven't changed
+            force: If True, apply even if weights haven't changed
 
         Returns:
-            True if nginx was reloaded, False otherwise
+            True if config was written, False otherwise
         """
         desired = (int(stable_weight), int(canary_weight))
         text = self.render(*desired)
@@ -123,10 +125,10 @@ class ProxyWriter:
         return True
 
     def _reload(self) -> None:
-        """Skip reload - config is written for manual reload.
+        """No-op: nginx reload is handled by the proxy container.
 
-        For Windows/Docker Desktop compatibility, we write the config but don't
-        attempt automatic reload. In production, mount the Docker socket or use
-        a sidecar for automatic reloading.
+        The proxy container watches the config file via 99-bootstrap.sh and
+        automatically reloads nginx when it changes. This works cross-platform
+        without requiring Docker socket access or host-side scripts.
         """
-        pass  # Config is written, reload happens manually or via external script
+        pass
