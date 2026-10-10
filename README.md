@@ -1,163 +1,126 @@
-# PERCH - Automated Canary Release System
+﻿# PERCH - 2048 canary release lab
 
-A canary release system that automatically promotes good deployments and rolls back bad ones
+PERCH is a runnable canary-release demo where every move in a real 2048 game becomes production-like traffic. Nginx splits requests between stable and canary services, Prometheus records the evidence, and the controller progressively promotes or automatically rolls back the canary.
 
-## What It Does
-
-PERCH runs two versions of your service (stable and canary) behind nginx with weighted routing. A controller continuously monitors metrics and adjusts traffic:
-
-- **Good canary** → Automatically promoted to 100% traffic
-- **Bad canary** → Automatically rolled back to 0% before most users see it
-
-**Key Features:**
-- Statistical rollback detection using Wilson intervals
-- Progressive rollout: 5% → 10% → 25% → 50% → 100%
-- Metrics: error rate and p95 latency via Prometheus
-- Zero human intervention required
-
-## Quick Start
+## Run it
 
 ```bash
-# Start the stack
 docker compose up -d --build
-
-# Run a good deployment (promotes to 100%)
-python scenarios/run.py good
-
-# Run a bad deployment (rolls back at 5%)
-python scenarios/run.py bad-error
-
-# View the rollout visualization
-open results/rollout.png
 ```
 
-**Note**: The nginx proxy automatically reloads its configuration when the controller adjusts traffic weights. This happens inside the proxy container, so no manual reload step is required.
-**Components:**
-- **Stable/Canary Services**: FastAPI apps with configurable faults
-- **nginx**: Weighted routing between services (auto-reloads on config changes)
-- **Prometheus**: Scrapes metrics every 2s
-- **Controller**: Polls every 5s, decides hold/advance/rollback
-- **Load Generator**: Optional traffic generator for demos
+Open the two web surfaces:
 
-## How It Decides
+- Game: <http://localhost:8085>
+- Live monitor: <http://localhost:8085/monitor.html>
 
-The controller uses statistical tests to avoid false alarms:
+Use the arrow keys or swipe on the board. Every valid move calls `http://localhost:8080/work/game`, so the request passes through the weighted proxy. The game shows whether the active backend accepted or rejected the move.
 
-1. **Sample size check**: Requires ≥40 canary requests before deciding (no noise-based rollbacks)
-2. **Error rate**: Uses Wilson interval to test if canary error rate is significantly worse than stable
-3. **Latency**: Rolls back if canary p95 > 1.5× stable p95
-4. **Borderline cases**: Holds when data is ambiguous rather than guessing
+## What the demo shows
 
-**Why Statistics?**
-- Point estimates (e.g., "5% worse") are noisy on small samples
-- Wilson intervals provide confidence bounds
-- Prevents rollbacks from random unlucky requests
+- Stable and canary FastAPI services behind weighted nginx routing.
+- Progressive traffic stages: `25% → 50% → 75% → 100%` in the interactive stack, so canary traffic is visible during normal play.
+- Prometheus metrics for request count, error rate, and p95 latency.
+- Statistical controller decisions with a minimum sample guard.
+- Live rollback back to 0% canary traffic when the evidence is bad.
+- A separate monitor showing allocation, controller state, error rate, latency, request volume, and decision history.
+- The visual game reference is loaded from an external 2048 screenshot source; no generated game image is used.
 
-## Demo Scenarios
+## Faulty canary behavior
 
-| Scenario | Fault | Result |
-|----------|-------|--------|
-| `good` | None | Promotes to 100% (~2 min) |
-| `bad-error` | 30% errors | Rolls back at 5% |
-| `bad-latency` | 10× slower | Rolls back at 5% |
-| `bad-slow-onset` | Errors ramp over 120s | Rolls back during ramp |
-| `bad-partial` | Only /work/checkout broken | Rolls back at 5% |
+The canary intentionally injects errors for game moves so the rollout can be observed:
 
-## Configuration
+```yaml
+GAME_ERROR_RATE: ${CANARY_GAME_ERROR_RATE:-0.18}
+```
 
-Key settings (via environment variables or `.env`):
+To change the fault rate, set it before starting the stack:
+
+```powershell
+$env:CANARY_GAME_ERROR_RATE = "0.35"
+docker compose up -d --build canary controller proxy
+```
+
+The fault is limited to `/work/game`; regular service paths continue to use `ERROR_RATE`. The stable service defaults to no game errors.
+
+## Services and ports
+
+| Service | Purpose | Port |
+|---|---|---:|
+| `frontend` | 2048 game and live monitor | `8085` |
+| `proxy` | Weighted request routing | `8080` |
+| `stable` | Healthy release | `8091` |
+| `canary` | Fault-injecting release | `8092` |
+| `prometheus` | Metrics and PromQL API | `9095` |
+| `controller` | Rollout decisions and nginx config updates | internal |
+
+The proxy watches its shared configuration and reloads nginx automatically when the controller changes the weights.
+
+## Controller configuration
+
+Set values in `.env` or the shell environment:
 
 | Variable | Default | Purpose |
-|----------|---------|---------|
-| `RAMP_STAGES` | `5,10,25,50,100` | Traffic percentages |
-| `RAMP_BAKE_SECONDS` | `25` | Seconds to hold at each stage |
-| `MIN_SAMPLES_PER_WINDOW` | `40` | Minimum samples for decision |
-| `LATENCY_TOLERANCE` | `1.5` | p95 rollback ratio |
+|---|---:|---|
+| `POLL_INTERVAL_SECONDS` | `3` | Metrics polling interval |
+| `RAMP_STAGES` | `25,50,75,100` | Canary traffic stages in the interactive stack |
+| `RAMP_BAKE_SECONDS` | `15` | Time held at each stage |
+| `MIN_SAMPLES_PER_WINDOW` | `12` | Minimum canary requests before deciding |
+| `LATENCY_TOLERANCE` | `1.5` | Allowed canary p95 multiplier |
 | `DECISION_MODE` | `tier1` | `tier1`, `naive_threshold`, or `tier2_sprt` |
-| `LOADGEN_RPS` | `50` | Traffic rate for demos |
+| `CANARY_GAME_ERROR_RATE` | `0.18` | Error probability for canary game moves |
 
-## Understanding the Output
 
-**Decision Log** (`results/decision_log.jsonl`):
-- Complete history of every decision with evidence
-- Includes metrics from both services
-- Shows why each action was taken
+## Dynamic allocation behavior
 
-**Status File** (`results/status.json`):
-- Current state for monitoring
-- Quick check of weight and terminal flags
+The controller continuously samples the live Prometheus counters every `POLL_INTERVAL_SECONDS` seconds (3 by default). It starts with 25% canary traffic and changes the nginx weights automatically:
 
-**Rollout Plot** (`results/rollout.png`):
-- Three stacked charts: weight, error rate, latency
-- Rollback and promote events marked
+- Healthy canary window → after the 15-second bake, advance to the next stage (`50%`, `75%`, then `100%`).
+- Error or latency regression → immediately write a rollback decision and move canary traffic to `0%`. The game also counts stable and canary responses so routing is visible during play.
+- Insufficient evidence → keep the current allocation and continue sampling.
+- Rollback is terminal for the current session, preventing a faulty release from re-entering traffic automatically.
 
-## Troubleshooting
+Set `CANARY_GAME_ERROR_RATE=0` to watch a healthy canary promote. Leave the default `0.18` to watch move failures accumulate and trigger rollback.
+## Scenario tests
 
-**Controller not making decisions?**
-- Check: `docker compose logs controller`
-- Ensure services are healthy: `curl http://localhost:8091/health` (or your configured STABLE_PORT)
-- Verify Prometheus is scraping: `curl http://localhost:9095/api/v1/targets`
-- Check nginx is reloading: `docker compose logs proxy` should show reload events when config changes
-
-**Rollback happens too quickly?**
-- Increase `MIN_SAMPLES_PER_WINDOW` (default: 40)
-- Increase `LATENCY_TOLERANCE` (default: 1.5)
-- Check if canary actually has higher latency (warm-up time)
-
-**Docker port conflicts?**
-- Edit `.env` to change ports:
-  ```
-  PROXY_PORT=8081
-  STABLE_PORT=8093
-  CANARY_PORT=8094
-  PROMETHEUS_PORT=9096
-  ```
-- Scenario runners will respect these port settings
-
-## Development
+The reusable runner remains available for controlled rollout tests:
 
 ```bash
-# Run unit tests
+python scenarios/run.py good
+python scenarios/run.py bad-error
+python scenarios/run.py bad-latency
+python scenarios/run.py bad-slow-onset
+python scenarios/run.py bad-partial
+python scenarios/run.py all
+```
+
+Run the core tests with:
+
+```bash
 python -m pytest tests/test_decision.py tests/test_ramp.py tests/test_proxy_writer.py -v
-
-# Format code
-python -m black .
-
-# Lint code
-python -m ruff check .
 ```
 
-## Production Use
+## Runtime output
 
-To use PERCH with your services:
+- `results/status.json` — current allocation and controller state.
+- `results/decision_log.jsonl` — append-only decision history and metric evidence.
+- `results/rollout.png` — generated by the scenario analysis workflow.
 
-1. **Add Prometheus metrics** to your services:
-   ```python
-   from prometheus_client import Counter, Histogram
-   requests = Counter('http_requests_total', 'Total requests', ['service', 'status'])
-   latency = Histogram('http_request_duration_seconds', 'Latency', ['service'])
-   ```
+Useful checks:
 
-2. **Configure Prometheus** to scrape your services
-
-3. **Point nginx** to your services in the template
-
-4. **Tune thresholds** for your traffic patterns
-
-## Performance Tuning
-
-**Faster rollouts:**
 ```bash
-RAMP_BAKE_SECONDS=15
-MIN_SAMPLES_PER_WINDOW=20
-LOADGEN_RPS=100
+docker compose ps
+docker compose logs -f controller
+curl http://localhost:9095/api/v1/targets
+curl http://localhost:8080/work/game?move=left
 ```
 
-**Safer rollouts:**
+To stop the local stack:
+
 ```bash
-RAMP_BAKE_SECONDS=60
-MIN_SAMPLES_PER_WINDOW=100
-RAMP_STAGES=1,2,5,10,20,40,60,80,100
-LATENCY_TOLERANCE=1.2
+docker compose down
 ```
+
+
+
+
 

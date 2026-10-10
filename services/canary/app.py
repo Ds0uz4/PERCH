@@ -1,4 +1,4 @@
-"""The HTTP service behind the canary rollout.
+﻿"""The HTTP service behind the canary rollout.
 
 Stable and canary run this exact file. The only differences between a healthy
 release and a broken one are environment variables set at container start:
@@ -8,7 +8,7 @@ release and a broken one are environment variables set at container start:
     LATENCY_MS_MEAN        Mean injected delay before the response.
     LATENCY_MS_JITTER      Std-dev of that delay (gaussian).
     DEGRADE_ENDPOINT       If set, only this path is faulty (partial failure).
-    DEGRADE_RAMP_SECONDS   If set, the fault grows 0 → configured over this
+    DEGRADE_RAMP_SECONDS   If set, the fault grows 0 â†’ configured over this
                            many seconds from process start (slow onset).
 
 GET /health is liveness only. The controller never uses it to decide a rollout.
@@ -24,6 +24,8 @@ import random
 import time
 
 from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
@@ -34,6 +36,7 @@ LATENCY_MS_JITTER = float(os.environ.get("LATENCY_MS_JITTER", "10"))
 DEGRADE_ENDPOINT = os.environ.get("DEGRADE_ENDPOINT", "").strip()
 _RAMP_RAW = os.environ.get("DEGRADE_RAMP_SECONDS", "").strip()
 DEGRADE_RAMP_SECONDS = float(_RAMP_RAW) if _RAMP_RAW else None
+GAME_ERROR_RATE = float(os.environ.get("GAME_ERROR_RATE", "0.18"))
 
 # Healthy baseline used when a request is *not* on the degraded path, and as
 # the starting point of a slow-onset ramp.
@@ -76,6 +79,13 @@ LATENCY = Histogram(
 )
 
 app = FastAPI(title=f"perch-{SERVICE_NAME}")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def fault_scale() -> float:
@@ -119,7 +129,7 @@ def behaviour_for(path: str) -> tuple[float, float, float]:
     scale = fault_scale()
     delay_mean = HEALTHY_MEAN_MS + (LATENCY_MS_MEAN - HEALTHY_MEAN_MS) * scale
     delay_jitter = HEALTHY_JITTER_MS + (LATENCY_MS_JITTER - HEALTHY_JITTER_MS) * scale
-    return delay_mean, delay_jitter, ERROR_RATE * scale
+    return delay_mean, delay_jitter, (GAME_ERROR_RATE if path.startswith("/work/game") else ERROR_RATE) * scale
 
 
 @app.get("/health")
@@ -152,3 +162,4 @@ async def work(request: Request, name: str | None = None) -> Response:
 @app.get("/metrics")
 def metrics() -> Response:
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+

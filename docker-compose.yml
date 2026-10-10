@@ -1,4 +1,4 @@
-name: perch
+﻿name: perch
 
 services:
   stable:
@@ -27,6 +27,7 @@ services:
     environment:
       SERVICE_NAME: canary
       ERROR_RATE: ${CANARY_ERROR_RATE:-0.0}
+      GAME_ERROR_RATE: ${CANARY_GAME_ERROR_RATE:-0.18}
       LATENCY_MS_MEAN: ${CANARY_LATENCY_MS_MEAN:-40}
       LATENCY_MS_JITTER: ${CANARY_LATENCY_MS_JITTER:-10}
       DEGRADE_ENDPOINT: ${CANARY_DEGRADE_ENDPOINT:-}
@@ -87,10 +88,10 @@ services:
     environment:
       PROMETHEUS_URL: ${PROMETHEUS_URL:-http://prometheus:9090}
       DECISION_MODE: ${DECISION_MODE:-tier1}
-      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-5}
-      RAMP_BAKE_SECONDS: ${RAMP_BAKE_SECONDS:-25}
-      RAMP_STAGES: ${RAMP_STAGES:-5,10,25,50,100}
-      MIN_SAMPLES_PER_WINDOW: ${MIN_SAMPLES_PER_WINDOW:-40}
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-3}
+      RAMP_BAKE_SECONDS: ${RAMP_BAKE_SECONDS:-15}
+      RAMP_STAGES: ${RAMP_STAGES:-25,50,75,100}
+      MIN_SAMPLES_PER_WINDOW: ${MIN_SAMPLES_PER_WINDOW:-12}
       LATENCY_TOLERANCE: ${LATENCY_TOLERANCE:-1.5}
       PROXY_CONTAINER: perch-proxy
       TEMPLATE_PATH: /app/nginx.conf.j2
@@ -101,17 +102,15 @@ services:
       - ./results:/results
       - ./proxy/nginx.conf.j2:/app/nginx.conf.j2:ro
 
-  loadgen:
-    build: ./loadgen
-    profiles: ["load"]
+  frontend:
+    build: ./app
+    ports:
+      - "8085:80"
+    volumes:
+      - ./results:/results:ro
     depends_on:
       - proxy
-    environment:
-      LOADGEN_TARGET: http://proxy:80
-      LOADGEN_RPS: ${LOADGEN_RPS:-50}
-      LOADGEN_DURATION: "0"
-      LOADGEN_MIX: ${LOADGEN_MIX:-work:2,work/checkout:1}
-      LOADGEN_OUTPUT: /results/loadgen.jsonl
-    volumes:
-      - ./results:/results
+
+
+
 

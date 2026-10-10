@@ -96,11 +96,10 @@ def rotate_logs(name: str) -> Path:
     stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     dest = RESULTS / "archive" / f"{name}_{stamp}"
     dest.mkdir(parents=True, exist_ok=True)
-    for filename in ("decision_log.jsonl", "status.json", "loadgen.jsonl"):
+    for filename in ("decision_log.jsonl", "status.json"):
         src = RESULTS / filename
         if src.exists():
             shutil.move(str(src), str(dest / filename))
-    (RESULTS / "loadgen.jsonl").write_text("", encoding="utf-8")
     return dest
 
 
@@ -178,32 +177,6 @@ def wait_terminal(expect: str, timeout: float) -> dict:
     )
 
 
-def blast_radius() -> tuple[int, int]:
-    """Calculate the blast radius of the canary deployment.
-
-    Reads the load generator logs to count how many total requests were made
-    and how many hit the canary service.
-
-    Returns:
-        A tuple of (canary_requests, total_requests).
-    """
-    path = RESULTS / "loadgen.jsonl"
-    canary = total = 0
-    if not path.exists():
-        return 0, 0
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        total += 1
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if row.get("service") == "canary":
-            canary += 1
-    return canary, total
-
-
 def plot(name: str) -> None:
     """Generate a rollout plot for the scenario.
 
@@ -256,15 +229,12 @@ def scenario_run(name: str, extra_env: dict | None = None) -> dict:
 
         run([*COMPOSE, "up", "-d", "--build", "--force-recreate", "controller"], env=env)
 
-        run([*COMPOSE, "--profile", "load", "up", "-d", "--build", "--force-recreate", "loadgen"], env=env)
-
         status = wait_terminal(spec["expect"], spec["timeout"])
         elapsed = time.time() - started
     finally:
         pass
 
-    run([*COMPOSE, "stop", "loadgen"], check=False)
-    canary_n, total_n = blast_radius()
+
     plot(name)
 
     summary = {
@@ -274,9 +244,6 @@ def scenario_run(name: str, extra_env: dict | None = None) -> dict:
         "promoted": status.get("promoted"),
         "rolled_back": status.get("rolled_back"),
         "seconds": round(elapsed, 1),
-        "canary_requests": canary_n,
-        "total_requests": total_n,
-        "blast_radius_pct": round(100.0 * canary_n / total_n, 2) if total_n else 0.0,
         "reason": status.get("reason"),
     }
     print("SUMMARY " + json.dumps(summary), flush=True)

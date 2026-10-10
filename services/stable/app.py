@@ -24,6 +24,7 @@ import random
 import time
 
 from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
@@ -76,6 +77,13 @@ LATENCY = Histogram(
 )
 
 app = FastAPI(title=f"perch-{SERVICE_NAME}")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def fault_scale() -> float:
